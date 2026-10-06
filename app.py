@@ -30,6 +30,8 @@ st.write(
     "instance costs using linear regression."
 )
 
+st.caption("By Cameron Collins")
+
 
 # ---------------------------------------------------------
 # Load Dataset
@@ -922,5 +924,5 @@ st.divider()
 
 st.caption(
     "EC2 Cost Analysis Dashboard | "
-    "Cloud Economics | Fall 2026"
+    "Cloud Economics | Fall 2026 | Cameron Collins"
 )
