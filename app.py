@@ -67,7 +67,7 @@ for column in cost_columns:
 
 
 # ---------------------------------------------------------
-# Prepare Data for Machine Learning
+# Prepare Numeric Features
 # ---------------------------------------------------------
 
 data["Instance Memory Numeric"] = pd.to_numeric(
@@ -80,13 +80,53 @@ data["vCPUs Numeric"] = pd.to_numeric(
     errors="coerce"
 )
 
-model_data = data.dropna(
+
+# ---------------------------------------------------------
+# IQR Outlier Detection
+# ---------------------------------------------------------
+
+Q1 = data["On Demand"].quantile(0.25)
+Q3 = data["On Demand"].quantile(0.75)
+
+IQR = Q3 - Q1
+
+lower_bound = Q1 - 1.5 * IQR
+upper_bound = Q3 + 1.5 * IQR
+
+outliers_on_demand = data[
+    (data["On Demand"] < lower_bound)
+    | (data["On Demand"] > upper_bound)
+]
+
+
+# ---------------------------------------------------------
+# Prepare Data for Machine Learning
+# Remove On-Demand Outliers Before Model Training
+# ---------------------------------------------------------
+
+# First remove rows that cannot be used by the regression model
+model_data_before_outliers = data.dropna(
     subset=[
         "On Demand",
         "Instance Memory Numeric",
         "vCPUs Numeric"
     ]
+).copy()
+
+
+# Remove On-Demand price outliers using the IQR bounds
+model_data = model_data_before_outliers[
+    (model_data_before_outliers["On Demand"] >= lower_bound)
+    & (model_data_before_outliers["On Demand"] <= upper_bound)
+].copy()
+
+
+# Number of regression rows removed as outliers
+outliers_removed_from_model = (
+    len(model_data_before_outliers)
+    - len(model_data)
 )
+
 
 X = model_data[
     ["Instance Memory Numeric", "vCPUs Numeric"]
@@ -168,7 +208,6 @@ col3.metric(
 
 st.subheader("EC2 Dataset")
 
-# Display only original dataset columns
 display_columns = [
     "Name",
     "API Name",
@@ -264,21 +303,10 @@ st.subheader("On-Demand Cost Outliers")
 
 st.write(
     "Potential On-Demand pricing outliers are identified "
-    "using the Interquartile Range (IQR) method."
+    "using the Interquartile Range (IQR) method. These outliers "
+    "remain visible in the exploratory analysis but are excluded "
+    "from regression model training."
 )
-
-Q1 = data["On Demand"].quantile(0.25)
-Q3 = data["On Demand"].quantile(0.75)
-
-IQR = Q3 - Q1
-
-lower_bound = Q1 - 1.5 * IQR
-upper_bound = Q3 + 1.5 * IQR
-
-outliers_on_demand = data[
-    (data["On Demand"] < lower_bound)
-    | (data["On Demand"] > upper_bound)
-]
 
 col1, col2, col3 = st.columns(3)
 
@@ -296,6 +324,7 @@ col3.metric(
     "Upper IQR Bound",
     f"${upper_bound:.4f}"
 )
+
 
 with st.expander("View On-Demand Cost Outliers"):
 
@@ -534,7 +563,9 @@ st.header("Regression Model Performance")
 
 st.write(
     "The linear regression model predicts EC2 On-Demand cost "
-    "using instance memory and number of vCPUs."
+    "using instance memory and number of vCPUs. On-Demand cost "
+    "outliers identified using the IQR method are excluded from "
+    "model training to reduce the influence of extreme prices."
 )
 
 
@@ -542,19 +573,24 @@ st.write(
 # Training Information
 # ---------------------------------------------------------
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 col1.metric(
-    "Regression Samples",
-    len(model_data)
+    "Samples Before Filtering",
+    len(model_data_before_outliers)
 )
 
 col2.metric(
+    "Outliers Removed",
+    outliers_removed_from_model
+)
+
+col3.metric(
     "Training Samples",
     len(X_train)
 )
 
-col3.metric(
+col4.metric(
     "Testing Samples",
     len(X_test)
 )
@@ -603,6 +639,16 @@ with st.expander("View Model Details"):
     )
 
     st.write(
+        "**IQR Filtering Range Used for Training:** "
+        f"${lower_bound:.4f} to ${upper_bound:.4f} per hour"
+    )
+
+    st.write(
+        "**Regression Samples After Outlier Removal:** "
+        f"{len(model_data)}"
+    )
+
+    st.write(
         "The model uses Instance Memory and vCPU count "
         "as predictors of hourly EC2 On-Demand cost."
     )
@@ -639,7 +685,7 @@ ax.plot(
 )
 
 ax.set_title(
-    "Actual vs Predicted On-Demand Costs"
+    "Actual vs Predicted On-Demand Costs After Outlier Removal"
 )
 
 ax.set_xlabel(
@@ -664,8 +710,20 @@ plt.close(fig)
 with st.expander("Model Interpretation and Limitations"):
 
     st.write(
-        "This model uses only two predictors: instance memory "
-        "and number of vCPUs."
+        "On-Demand price outliers are removed from the regression "
+        "training data using the IQR method. This reduces the "
+        "influence of extremely expensive EC2 instances on the "
+        "regression line."
+    )
+
+    st.write(
+        "The full dataset, including outliers, is still retained "
+        "for exploratory analysis elsewhere in the dashboard."
+    )
+
+    st.write(
+        "The regression model still uses only two predictors: "
+        "instance memory and number of vCPUs."
     )
 
     st.write(
@@ -676,13 +734,12 @@ with st.expander("Model Interpretation and Limitations"):
     )
 
     st.write(
-        "Because the model is a simple linear regression, "
-        "some configurations may produce unrealistic predictions, "
-        "including negative prices."
+        "Therefore, outlier removal can improve the model without "
+        "making it a complete representation of EC2 pricing."
     )
 
     st.write(
-        f"The model's MAE is ${mae:.2f} per hour and its "
+        f"The filtered model's MAE is ${mae:.2f} per hour and its "
         f"RMSE is ${rmse:.2f} per hour."
     )
 
@@ -697,7 +754,8 @@ st.header("EC2 Cost Predictor")
 
 st.write(
     "Enter an EC2 configuration below to estimate its "
-    "On-Demand hourly cost using the trained linear regression model."
+    "On-Demand hourly cost using the linear regression model "
+    "trained after IQR outlier removal."
 )
 
 col1, col2 = st.columns(2)
@@ -802,9 +860,57 @@ if st.button(
 
         st.warning(
             "The model produced a negative price, which is not "
-            "realistic for an EC2 instance. This demonstrates a "
-            "limitation of using only memory and vCPUs in a simple "
-            "linear regression model."
+            "realistic for an EC2 instance. Although IQR outliers "
+            "were removed before training, the model still uses "
+            "only memory and vCPUs and may be inaccurate for some "
+            "configurations."
+        )
+
+
+    # -----------------------------------------------------
+    # Comparable Real EC2 Instances
+    # -----------------------------------------------------
+
+    comparable_instances = data[
+        (data["Instance Memory Numeric"] == memory_input)
+        & (data["vCPUs Numeric"] == vcpu_input)
+        & (data["On Demand"].notna())
+    ][
+        [
+            "Name",
+            "API Name",
+            "Instance Memory",
+            "vCPUs",
+            "On Demand"
+        ]
+    ].sort_values(
+        "On Demand"
+    )
+
+
+    st.subheader(
+        "Comparable Instances in Dataset"
+    )
+
+
+    if not comparable_instances.empty:
+
+        st.write(
+            "These EC2 instances in the original dataset have "
+            "the same memory and vCPU configuration:"
+        )
+
+        st.dataframe(
+            comparable_instances,
+            width="stretch",
+            hide_index=True
+        )
+
+    else:
+
+        st.info(
+            "No EC2 instances in the dataset have this exact "
+            "memory and vCPU configuration."
         )
 
 
